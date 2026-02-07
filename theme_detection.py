@@ -117,6 +117,51 @@ def get_season_suggestions():
     return list(SEASON_PROFILES.keys())
 
 
+# Full lists for user to pick from (tops and bottoms) — works for any theme/season/gender
+def _collect_options():
+    tops_set = set()
+    bottoms_set = set()
+    for p in THEME_PROFILES.values():
+        tops_set.update(p["tops"])
+        bottoms_set.update(p["bottoms"])
+    for p in SEASON_PROFILES.values():
+        tops_set.update(p.get("top_emphasis", []))
+        bottoms_set.update(p.get("bottom_emphasis", []))
+    # Add common options so lists are plenty
+    tops_set.update(["T-Shirt", "Shirt", "Blouse", "Sweater", "Hoodie", "Jacket", "Blazer", "Cardigan", "Tank Top", "Polo", "Turtleneck", "Crop Top", "Sweatshirt", "Linen Shirt", "Flannel Shirt", "Silk Blouse", "Structured Blouse", "V-Neck Top", "Henley"])
+    bottoms_set.update(["Jeans", "Trousers", "Shorts", "Skirt", "Pencil Skirt", "Dress Pants", "Sweatpants", "Leggings", "Cargo Pants", "Chinos", "Tailored Shorts", "Midi Skirt", "A-Line Skirt", "Wide-Leg Pants"])
+    return sorted(tops_set), sorted(bottoms_set)
+
+
+TOPS_OPTIONS, BOTTOMS_OPTIONS = _collect_options()
+
+
+def get_tops_options(theme: str = None, season: str = None):
+    """Return list of top wear options. If theme/season given, suggested ones first."""
+    if not theme and not season:
+        return TOPS_OPTIONS
+    suggested = []
+    if theme:
+        suggested = get_theme_outfit(theme).get("tops", [])
+    if season:
+        suggested = list(dict.fromkeys(suggested + get_season_outfit(season).get("top_emphasis", [])))
+    rest = [t for t in TOPS_OPTIONS if t not in suggested]
+    return suggested + rest
+
+
+def get_bottoms_options(theme: str = None, season: str = None):
+    """Return list of bottom wear options. If theme/season given, suggested ones first."""
+    if not theme and not season:
+        return BOTTOMS_OPTIONS
+    suggested = []
+    if theme:
+        suggested = get_theme_outfit(theme).get("bottoms", [])
+    if season:
+        suggested = list(dict.fromkeys(suggested + get_season_outfit(season).get("bottom_emphasis", [])))
+    rest = [b for b in BOTTOMS_OPTIONS if b not in suggested]
+    return suggested + rest
+
+
 def detect_theme_heuristic(image: Image.Image) -> str:
     """
     Simple heuristic-based theme detection.
@@ -198,19 +243,20 @@ def get_outfit_prompt(
     season: str,
     recommended_colors: list,
     theme_name: str = None,
+    top_choice: str = None,
+    bottom_choice: str = None,
 ) -> str:
     """
-    Build a stable-diffusion style prompt for outfit generation.
-    Uses only theme + season for garment types and recommended_colors from
-    color analysis for this person — no hardcoded colors; different people
-    get different palettes from their analysis.
+    Build prompt for outfit generation. Uses only this person's color analysis
+    (first two recommended colors) and the user-chosen or suggested top/bottom.
+    Prompt stresses solid colors so the model follows the analysis.
     """
-    top, bottom = _pick_garments_for_theme_season(theme, season)
+    top = top_choice if top_choice else _pick_garments_for_theme_season(theme, season)[0]
+    bottom = bottom_choice if bottom_choice else _pick_garments_for_theme_season(theme, season)[1]
     season_profile = get_season_outfit(season)
     theme_profile = get_theme_outfit(theme)
     name = theme_name or theme_profile.get("name", theme)
 
-    # Use only this person's color analysis: first two recommended colors for top and bottom
     if not recommended_colors:
         color_top = color_bottom = "neutral"
     elif len(recommended_colors) == 1:
@@ -219,10 +265,11 @@ def get_outfit_prompt(
         color_top = recommended_colors[0]
         color_bottom = recommended_colors[1]
 
+    # Explicit: solid colors from analysis only, full body, both garments
     prompt = (
-        f"person wearing {color_top} {top} on top and {color_bottom} {bottom} on bottom, "
-        f"full body outfit, both garments visible, {name} style, {season_profile['style_words']}, "
-        "professional photo, good lighting, high quality"
+        f"person wearing solid {color_top} {top} on top and solid {color_bottom} {bottom} on bottom, "
+        f"full body outfit, both garments clearly visible, {name} style, {season_profile['style_words']}, "
+        "professional photo, good lighting, high quality, clean styling"
     )
     return prompt
 

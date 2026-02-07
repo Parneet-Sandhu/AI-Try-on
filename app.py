@@ -7,8 +7,11 @@ from theme_detection import (
     get_theme_outfit,
     get_theme_suggestions,
     get_season_suggestions,
+    get_tops_options,
+    get_bottoms_options,
     get_outfit_prompt,
     suggest_outfit_for_user,
+    _pick_garments_for_theme_season,
 )
 
 # Page configuration
@@ -40,7 +43,7 @@ st.markdown("""
 
 # Streamlit UI
 st.markdown('<p class="title">👗 Virtual Closet – AI Styling Lab</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">Upload your photo → Color analysis → Pick theme & season → AI generates your outfit</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Your photo → Color analysis → Theme & season → You pick top & bottom → AI generates you in your colors only</p>', unsafe_allow_html=True)
 
 # Sidebar: Settings
 with st.sidebar:
@@ -66,10 +69,15 @@ person_file = st.file_uploader("Upload your full-body photo", type=["jpg", "png"
 analysis = None
 theme_final = None
 rec_colors = []
+outfit = None
+selected_top = selected_bottom = None
 
 if person_file:
     person_img = Image.open(person_file).convert("RGB")
     st.image(person_img, caption="Your Photo", use_container_width=True)
+
+    # Theme for this session (used for suggestions and options)
+    theme_final = selected_theme if selected_theme != "Auto-detect" else detect_theme_heuristic(person_img)
 
     # ========== COLOR ANALYSIS ==========
     if show_color_analysis:
@@ -92,14 +100,10 @@ if person_file:
         st.success(colors_display)
         rec_colors = rec["best_colors"]
 
-    # ========== THEME + SEASON & OUTFIT SUGGESTION ==========
+    # ========== THEME + SEASON & SUGGESTION ==========
     if show_theme_detection:
         st.divider()
-        st.markdown("### 🎭 Theme & Outfit Preview")
-        if selected_theme != "Auto-detect":
-            theme_final = selected_theme
-        else:
-            theme_final = detect_theme_heuristic(person_img)
+        st.markdown("### 🎭 Theme & Suggestion")
         outfit = suggest_outfit_for_user(person_img, rec_colors or [], theme_final)
         col_t1, col_t2 = st.columns(2)
         with col_t1:
@@ -108,11 +112,29 @@ if person_file:
             st.write(f"**{outfit['theme_name']}** · **Season:** {selected_season.title()}")
         col_outfit1, col_outfit2 = st.columns(2)
         with col_outfit1:
-            st.write(f"**👔 Top:** {outfit['suggested_top']}")
+            st.write(f"**Suggested top:** {outfit['suggested_top']}")
         with col_outfit2:
-            st.write(f"**👖 Bottom:** {outfit['suggested_bottom']}")
+            st.write(f"**Suggested bottom:** {outfit['suggested_bottom']}")
         st.info(f"**Styling Tip:** {outfit['styling_tips']}")
-        st.success(f"**Colors for outfit:** {', '.join(outfit['suggested_colors'])}")
+
+    # ========== CHOOSE YOUR OUTFIT (your colors only) ==========
+    st.divider()
+    st.markdown("### 👔 Choose Your Outfit")
+    tops_list = get_tops_options(theme_final, selected_season)
+    bottoms_list = get_bottoms_options(theme_final, selected_season)
+    if outfit:
+        sug_top, sug_bottom = outfit["suggested_top"], outfit["suggested_bottom"]
+    else:
+        sug_top, sug_bottom = _pick_garments_for_theme_season(theme_final, selected_season)
+    idx_top = tops_list.index(sug_top) if sug_top in tops_list else 0
+    idx_bottom = bottoms_list.index(sug_bottom) if sug_bottom in bottoms_list else 0
+
+    selected_top = st.selectbox("Top wear", tops_list, index=idx_top, key="top_wear")
+    selected_bottom = st.selectbox("Bottom wear", bottoms_list, index=idx_bottom, key="bottom_wear")
+
+    color1 = (rec_colors[0] if rec_colors else "neutral")
+    color2 = (rec_colors[1] if len(rec_colors) > 1 else rec_colors[0] if rec_colors else "neutral")
+    st.success(f"**Outfit preview (from your color analysis only):** {color1} **{selected_top}** + {color2} **{selected_bottom}**")
 
 st.divider()
 
@@ -134,7 +156,11 @@ if st.button("✨ Generate Try-On", type="primary", use_container_width=True):
                 analysis_run = analyze_person(person_img)
                 rec_colors = analysis_run["recommendations"]["best_colors"]
             colors_for_prompt = rec_colors if rec_colors else ["neutral", "gray"]
-            prompt = get_outfit_prompt(theme_for_prompt, selected_season, colors_for_prompt)
+            # Use the exact top and bottom the user picked; colors only from color analysis
+            prompt = get_outfit_prompt(
+                theme_for_prompt, selected_season, colors_for_prompt,
+                top_choice=selected_top or None, bottom_choice=selected_bottom or None,
+            )
 
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -159,17 +185,8 @@ if st.button("✨ Generate Try-On", type="primary", use_container_width=True):
 st.divider()
 st.markdown("""
 ### About this app
-- **Flow**: Upload your photo → we analyze your skin tone & recommend colors → you pick **Theme** (college, office, casual…) and **Season** (summer, winter…) → AI generates you wearing an outfit that matches your colors and setting.
-- **No cloth upload**: Outfits are generated from your color analysis + theme + season only.
-- **Model**: Stable Diffusion Inpainting (Hugging Face).
-
-### ⏳ Speed
-- **GPU**: ~30–60 seconds per image (recommended).
-- **CPU**: ~1–3 minutes; first run also downloads the model (~2–3 min).
-
-**Faster on GPU:**
-```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+- **Flow**: Upload your photo → **color analysis** (skin tone + colors that suit you) → set **Theme** and **Season** → **choose your top and bottom** from the lists → generate. The outfit is always in **your analysis colors only** (no random or bad combinations).
+- **Model**: Stable Diffusion Inpainting (Hugging Face, free).
+- **Speed**: GPU ~30–60 s; CPU ~1–3 min per image. First run downloads the model once.
 """)
 
