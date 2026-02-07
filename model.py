@@ -1,33 +1,60 @@
-import torch
 from PIL import Image, ImageFilter
 import numpy as np
+import sys
+import os
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+def _import_torch():
+    """Import torch from site-packages only, so a local 'torch' folder doesn't shadow it."""
+    # PyTorch can fail with "loaded the torch/_C folder of the PyTorch repository"
+    # when a torch source dir or cwd shadows the real package. Prefer site-packages.
+    import site
+    saved_path = list(sys.path)
+    try:
+        # Prepend each site-packages path so installed torch is found first
+        for sp in site.getsitepackages():
+            if os.path.isdir(sp) and sp not in sys.path:
+                sys.path.insert(0, sp)
+        # Remove cwd and script dir so they don't shadow torch
+        cwd = os.getcwd()
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        sys.path = [p for p in sys.path if os.path.abspath(p) != cwd and os.path.abspath(p) != script_dir]
+        import torch
+        return torch
+    finally:
+        sys.path[:] = saved_path
+
+
+def _get_device():
+    """Lazy torch import to avoid loading PyTorch until generation is needed."""
+    torch = _import_torch()
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
 
 def load_models(opt):
-    """Load fast SDXL Turbo model from Hugging Face (instant generation!).
-
-    Import `diffusers` lazily so importing `model` doesn't fail at app
-    startup if the user's installed `transformers`/`diffusers` versions are
-    incompatible. If an import error occurs, raise a helpful RuntimeError
-    explaining how to fix it.
+    """Load inpainting model. Torch and diffusers are imported here so the app
+    can start without PyTorch (e.g. for color analysis only).
     """
     try:
-        # Import the concrete inpainting pipeline class to avoid importing
-        # diffusers' auto-pipeline registry (which loads optional plugins).
+        torch = _import_torch()
+    except Exception as e:
+        raise RuntimeError(
+            "PyTorch failed to load. This often happens when a local 'torch' folder "
+            "shadows the real package, or PyTorch is misinstalled.\n\n"
+            "Fix: 1) Run from the project folder: cd E:\\try-on\\AI-Try-on\n"
+            "     2) Reinstall: pip uninstall torch torchvision && pip install torch torchvision\n\n"
+            f"Original error: {e}") from e
+    try:
         from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_inpaint import (
             StableDiffusionInpaintPipeline,
         )
     except Exception as e:
         raise RuntimeError(
-            "Failed to import diffusers/transformers. This usually means your "
-            "installed packages are incompatible. Please run:\n\n"
-            "  pip install -U transformers diffusers accelerate\n\n"
-            "or install the project's requirements:\n"
-            "  pip install -r requirements.txt\n\n"
+            "Failed to import diffusers. Run: pip install -U transformers diffusers accelerate\n\n"
             f"Original error: {e}") from e
 
-    print(f"Loading SDXL Turbo model on {device}...")
+    device = _get_device()
+    print(f"Loading inpainting model on {device}...")
     print("⚡ This model generates results in 1 step (instant!)")
 
     # Use runwayml inpainting model (works with Stable Diffusion InpaintPipeline)
@@ -46,44 +73,83 @@ def load_models(opt):
     print("✓ Model loaded successfully!")
     return pipeline
 
-def create_clothing_mask(image: Image.Image, cloth_image: Image.Image) -> Image.Image:
+def create_clothing_mask(image: Image.Image, cloth_image: Image.Image = None) -> Image.Image:
     """
-    Create a simple mask for the clothing region.
-    This is a placeholder - in production, you'd use cloth segmentation.
-    For now, we create a center mask to focus on the clothing area.
+    Create a simple mask for the clothing region (torso + upper legs).
+    Used for inpainting: masked area will be replaced by generated clothing.
+    cloth_image is optional (kept for backward compatibility with generate_tryon).
     """
     width, height = image.size
-    
-    # Create a mask focusing on the center body area (torso and legs for tops/dresses)
     mask = Image.new('L', (width, height), 0)
-    
-    # Fill center region (roughly where clothes would be)
-    # Top: 20% from top, Bottom: 80% from top, Left/Right: 20% from edges
     left = int(width * 0.15)
     top = int(height * 0.15)
     right = int(width * 0.85)
     bottom = int(height * 0.85)
-    
     from PIL import ImageDraw
     draw = ImageDraw.Draw(mask)
     draw.rectangle([left, top, right, bottom], fill=255)
-    
     return mask
+
+
+def generate_tryon_from_prompt(
+    person_img: Image.Image,
+    prompt: str,
+    pipeline,
+    opt=None,
+    num_steps: int = 15,
+    guidance_scale: float = 7.0,
+):
+    """
+    Generate virtual try-on using only a text prompt (no cloth image).
+    Uses inpainting on the clothing region so the outfit matches theme + season + color analysis.
+    Faster defaults: 15 steps, guidance 7.0.
+    """
+    size = (512, 512)
+    person_img = person_img.resize(size, Image.Resampling.LANCZOS)
+    mask_img = create_clothing_mask(person_img)
+    mask_img = mask_img.resize(size, Image.Resampling.LANCZOS)
+
+    negative_prompt = "low quality, blurry, distorted, ugly, bad anatomy, deformed face, extra limbs"
+
+    import torch
+    with torch.no_grad():
+        output = pipeline(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            image=person_img,
+            mask_image=mask_img,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+            height=512,
+            width=512,
+        )
+    img = output.images[0]
+
+    # If result is too dark, retry once with more steps
+    arr = np.array(img.convert("L"))
+    if float(arr.mean()) < 20:
+        import torch
+        with torch.no_grad():
+            output = pipeline(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=person_img,
+                mask_image=mask_img,
+                num_inference_steps=25,
+                guidance_scale=7.5,
+                height=512,
+                width=512,
+            )
+        img = output.images[0]
+    return img
+
 
 def generate_tryon(person_img: Image.Image, cloth_img: Image.Image, pipeline, opt=None):
     """
     Generate virtual try-on using ML inpainting with adaptive prompts.
     Uses the actual clothing image to guide generation.
-    
-    Args:
-        person_img: PIL Image of person
-        cloth_img: PIL Image of clothing
-        pipeline: Diffusers StableDiffusionInpaintPipeline
-        opt: Optional config object
-        
-    Returns:
-        PIL Image of person wearing the clothing
     """
+    import torch
     size = (512, 512)
     person_img = person_img.resize(size, Image.Resampling.LANCZOS)
     cloth_img = cloth_img.resize(size, Image.Resampling.LANCZOS)
@@ -115,9 +181,8 @@ def generate_tryon(person_img: Image.Image, cloth_img: Image.Image, pipeline, op
     
     print(f"Generating try-on with prompt: '{prompt}'...")
 
-    # Safer defaults: more steps and guidance for reliable outputs
-    default_steps = 25
-    default_guidance = 7.5
+    default_steps = 18
+    default_guidance = 7.0
 
     def run_pipeline(steps, guidance):
         with torch.no_grad():

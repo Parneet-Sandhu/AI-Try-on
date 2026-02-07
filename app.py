@@ -1,9 +1,15 @@
 import streamlit as st
 from PIL import Image
-from model import load_models, generate_tryon, generate_tryon_fast
+from model import load_models, generate_tryon_from_prompt
 from color_analysis import analyze_person
-from theme_detection import detect_theme_heuristic, get_theme_outfit, get_theme_suggestions, suggest_outfit_for_user
-import time
+from theme_detection import (
+    detect_theme_heuristic,
+    get_theme_outfit,
+    get_theme_suggestions,
+    get_season_suggestions,
+    get_outfit_prompt,
+    suggest_outfit_for_user,
+)
 
 # Page configuration
 st.set_page_config(
@@ -34,170 +40,136 @@ st.markdown("""
 
 # Streamlit UI
 st.markdown('<p class="title">👗 Virtual Closet – AI Styling Lab</p>', unsafe_allow_html=True)
-st.markdown('<p class="subtitle">AI Color Analysis + Theme Detection + Virtual Try-On</p>', unsafe_allow_html=True)
+st.markdown('<p class="subtitle">Upload your photo → Color analysis → Pick theme & season → AI generates your outfit</p>', unsafe_allow_html=True)
 
 # Sidebar: Settings
 with st.sidebar:
     st.header("⚙️ Settings")
-    lightweight = st.checkbox("Lightweight Mode (instant, ~50MB)", value=False)
     show_color_analysis = st.checkbox("Show Color Analysis", value=True)
     show_theme_detection = st.checkbox("Show Theme Detection", value=True)
     selected_theme = st.selectbox(
-        "Force Theme (optional)",
+        "Theme",
         ["Auto-detect"] + get_theme_suggestions(),
+        help="e.g. College, Office, Casual — outfit type will match this.",
+    )
+    selected_season = st.selectbox(
+        "Season",
+        get_season_suggestions(),
+        help="Summer = lighter clothes; Winter = hoodies, layers, etc.",
     )
 
 st.divider()
 
-# Create two columns for image uploads
-col1, col2 = st.columns(2)
+# Single column: person photo only (no cloth upload)
+st.subheader("📸 Your Photo")
+person_file = st.file_uploader("Upload your full-body photo", type=["jpg", "png"])
+analysis = None
+theme_final = None
+rec_colors = []
 
-with col1:
-    st.subheader("📸 Your Photo")
-    person_file = st.file_uploader("Upload your full-body photo", type=["jpg", "png"])
-    if person_file:
-        person_img = Image.open(person_file).convert("RGB")
-        st.image(person_img, caption="Your Photo", use_container_width=True)
+if person_file:
+    person_img = Image.open(person_file).convert("RGB")
+    st.image(person_img, caption="Your Photo", use_container_width=True)
 
-        # ========== COLOR ANALYSIS ==========
-        analysis = None
-        if show_color_analysis:
-            st.divider()
-            st.markdown("### 🎨 AI Color Analysis")
-            with st.spinner("Analyzing your skin tone and colors..."):
-                analysis = analyze_person(person_img)
-                skin_class = analysis["skin_tone_class"]
-                temp = analysis["temperature"]
-                rec = analysis["recommendations"]
+    # ========== COLOR ANALYSIS ==========
+    if show_color_analysis:
+        st.divider()
+        st.markdown("### 🎨 AI Color Analysis")
+        with st.spinner("Analyzing your skin tone and colors..."):
+            analysis = analyze_person(person_img)
+            skin_class = analysis["skin_tone_class"]
+            temp = analysis["temperature"]
+            rec = analysis["recommendations"]
 
-            col_a, col_b = st.columns(2)
-            with col_a:
-                st.metric("Skin Tone", skin_class)
-            with col_b:
-                st.metric("Temperature", temp)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.metric("Skin Tone", skin_class)
+        with col_b:
+            st.metric("Temperature", temp)
 
-            st.write(f"**✨ Colors That Suit You:**")
-            colors_display = ", ".join(rec["best_colors"][:5])
-            st.success(colors_display)
+        st.write("**✨ Colors That Suit You:**")
+        colors_display = ", ".join(rec["best_colors"][:5])
+        st.success(colors_display)
+        rec_colors = rec["best_colors"]
 
-        # ========== THEME DETECTION & OUTFIT SUGGESTION ==========
-        if show_theme_detection:
-            st.divider()
-            st.markdown("### 🎭 Theme Detection & Outfit Suggestions")
-            
-            # Get recommended colors from analysis
-            rec_colors = analysis["recommendations"]["best_colors"] if analysis else []
-            
-            # Determine theme
-            if selected_theme != "Auto-detect":
-                theme_final = selected_theme
-            else:
-                theme_final = detect_theme_heuristic(person_img)
-            
-            outfit = suggest_outfit_for_user(person_img, rec_colors, theme_final)
-            
-            col_t1, col_t2 = st.columns(2)
-            with col_t1:
-                st.metric("Suggested Theme", outfit["emoji"])
-            with col_t2:
-                st.write(f"**{outfit['theme_name']}**")
-            
-            col_outfit1, col_outfit2 = st.columns(2)
-            with col_outfit1:
-                st.write(f"**👔 Top:** {outfit['suggested_top']}")
-            with col_outfit2:
-                st.write(f"**👖 Bottom:** {outfit['suggested_bottom']}")
-            
-            st.info(f"**Styling Tip:** {outfit['styling_tips']}")
-            st.success(f"**Colors for {outfit['theme_name']}:** {', '.join(outfit['suggested_colors'])}")
-
-with col2:
-    st.subheader("👔 Clothing Item")
-    cloth_file = st.file_uploader("Upload clothing image", type=["jpg", "png"])
-    if cloth_file:
-        cloth_img = Image.open(cloth_file).convert("RGB")
-        st.image(cloth_img, caption="Clothing Item", use_container_width=True)
+    # ========== THEME + SEASON & OUTFIT SUGGESTION ==========
+    if show_theme_detection:
+        st.divider()
+        st.markdown("### 🎭 Theme & Outfit Preview")
+        if selected_theme != "Auto-detect":
+            theme_final = selected_theme
+        else:
+            theme_final = detect_theme_heuristic(person_img)
+        outfit = suggest_outfit_for_user(person_img, rec_colors or [], theme_final)
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.metric("Theme", outfit["emoji"])
+        with col_t2:
+            st.write(f"**{outfit['theme_name']}** · **Season:** {selected_season.title()}")
+        col_outfit1, col_outfit2 = st.columns(2)
+        with col_outfit1:
+            st.write(f"**👔 Top:** {outfit['suggested_top']}")
+        with col_outfit2:
+            st.write(f"**👖 Bottom:** {outfit['suggested_bottom']}")
+        st.info(f"**Styling Tip:** {outfit['styling_tips']}")
+        st.success(f"**Colors for outfit:** {', '.join(outfit['suggested_colors'])}")
 
 st.divider()
 
-# Generate button
+# Generate button: only needs person photo; uses theme + season + color analysis
 if st.button("✨ Generate Try-On", type="primary", use_container_width=True):
-    if person_file and cloth_file:
+    if not person_file:
+        st.warning("⚠️ Please upload your full-body photo first.")
+    else:
         try:
-            pipeline = None
-            if not lightweight:
-                with st.spinner("Loading AI model (this may take a minute)..."):
-                    # Load models with simple config
-                    class Opt:
-                        pass
-                    opt = Opt()
-                    pipeline = load_models(opt)
-            
-            with st.spinner("Generating your try-on image..."):
-                person_img = Image.open(person_file).convert("RGB")
-                cloth_img = Image.open(cloth_file).convert("RGB")
-                
-                # Determine expected time
-                import torch
-                device = 'cuda' if torch.cuda.is_available() else 'cpu'
-                time_estimate = "5-10 seconds (GPU)" if device == 'cuda' else "30-60 seconds (CPU)"
-                
-                st.info(f"⏳ This may take {time_estimate}. Please wait...")
-                
-                # Generate try-on (lightweight or ML)
-                if lightweight:
-                    st.info("Using Lightweight Mode (instant compositing)")
-                    output = generate_tryon_fast(person_img, cloth_img)
-                else:
-                    st.info("Using AI ML Model (Stable Diffusion Inpainting - better quality but slower)")
-                    output = generate_tryon(person_img, cloth_img, pipeline, opt)
-                
-                # Display result
-                st.success("✓ Try-on image generated!")
-                st.divider()
-                st.subheader("🎉 Your Try-On Result")
-                st.image(output, caption="Virtual Try-On Result", use_container_width=True)
-                
-                # Download button
-                output_path = "tryon_result.png"
-                output.save(output_path)
-                with open(output_path, "rb") as file:
-                    st.download_button(
-                        label="⬇️ Download Result",
-                        data=file,
-                        file_name="tryon_result.png",
-                        mime="image/png"
-                    )
-        
+            with st.spinner("Loading AI model (first time may take ~1 min)..."):
+                class Opt:
+                    pass
+                opt = Opt()
+                pipeline = load_models(opt)
+
+            person_img = Image.open(person_file).convert("RGB")
+            theme_for_prompt = theme_final if theme_final else detect_theme_heuristic(person_img)
+            if not rec_colors:
+                analysis_run = analyze_person(person_img)
+                rec_colors = analysis_run["recommendations"]["best_colors"]
+            colors_for_prompt = rec_colors if rec_colors else ["neutral", "gray"]
+            prompt = get_outfit_prompt(theme_for_prompt, selected_season, colors_for_prompt)
+
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            time_estimate = "~30–60 s (GPU)" if device == "cuda" else "~1–3 min (CPU)"
+            st.info(f"⏳ Generating outfit with your colors + {theme_for_prompt} + {selected_season}… {time_estimate}")
+
+            with st.spinner("Generating your outfit..."):
+                output = generate_tryon_from_prompt(person_img, prompt, pipeline, opt, num_steps=15, guidance_scale=7.0)
+
+            st.success("✓ Try-on image generated!")
+            st.divider()
+            st.subheader("🎉 Your Try-On Result")
+            st.image(output, caption="Virtual Try-On Result", use_container_width=True)
+            output_path = "tryon_result.png"
+            output.save(output_path)
+            with open(output_path, "rb") as f:
+                st.download_button(label="⬇️ Download Result", data=f, file_name="tryon_result.png", mime="image/png")
         except Exception as e:
             st.error(f"❌ Error: {str(e)}")
-            st.info("💡 Tips: Make sure your image is clear and shows full body. Try different poses or clothing!")
-    
-    else:
-        st.warning("⚠️ Please upload both a photo and a clothing item")
+            st.info("💡 Make sure your image is clear and shows full body. Try theme/season and run again.")
 
 st.divider()
 st.markdown("""
 ### About this app
-This is a virtual try-on application powered by AI diffusion models.
-- **Model**: Stable Diffusion Inpainting (Hugging Face)
-- **Purpose**: Help you visualize how different clothing would look on you!
-- **Note**: Results are AI-generated and for visualization purposes
+- **Flow**: Upload your photo → we analyze your skin tone & recommend colors → you pick **Theme** (college, office, casual…) and **Season** (summer, winter…) → AI generates you wearing an outfit that matches your colors and setting.
+- **No cloth upload**: Outfits are generated from your color analysis + theme + season only.
+- **Model**: Stable Diffusion Inpainting (Hugging Face).
 
-### ⏳ Why is generation slow?
-**On CPU**: ~30-60 seconds (default, no GPU)  
-**On GPU**: ~5-10 seconds (10x faster!)
+### ⏳ Speed
+- **GPU**: ~30–60 seconds per image (recommended).
+- **CPU**: ~1–3 minutes; first run also downloads the model (~2–3 min).
 
-**Tips to speed up:**
-- **Use a GPU**: Install CUDA for PyTorch
-- **First run takes longer**: Model downloads on first use (~3 min)
-- **Subsequent runs are faster**: Model is cached
-
-### 🚀 Want faster generation?
-Install GPU support:
+**Faster on GPU:**
 ```bash
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
-This will make generation 10x faster!
 """)
 

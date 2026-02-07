@@ -83,6 +83,39 @@ THEME_PROFILES = {
     },
 }
 
+# Season adjusts garment types (lighter vs heavier)
+SEASON_PROFILES = {
+    "summer": {
+        "name": "Summer",
+        "top_emphasis": ["Tank Top", "T-Shirt", "Linen Shirt", "Crop Top", "Sleeveless Blouse", "Polo"],
+        "bottom_emphasis": ["Shorts", "Light Pants", "Skirt", "Linen Pants", "Capris"],
+        "style_words": "light, breathable, summer",
+    },
+    "winter": {
+        "name": "Winter",
+        "top_emphasis": ["Hoodie", "Sweater", "Jacket", "Coat", "Cardigan", "Turtleneck", "Sweatshirt"],
+        "bottom_emphasis": ["Jeans", "Trousers", "Sweatpants", "Warm Pants", "Leggings"],
+        "style_words": "warm, layered, winter",
+    },
+    "spring": {
+        "name": "Spring",
+        "top_emphasis": ["Light Sweater", "Blouse", "T-Shirt", "Cardigan", "Jacket"],
+        "bottom_emphasis": ["Jeans", "Chinos", "Skirt", "Light Pants"],
+        "style_words": "light layers, spring",
+    },
+    "fall": {
+        "name": "Fall / Autumn",
+        "top_emphasis": ["Sweater", "Flannel", "Cardigan", "Long Sleeve Tee", "Jacket"],
+        "bottom_emphasis": ["Jeans", "Cargo Pants", "Trousers", "Skirt"],
+        "style_words": "cozy, autumn",
+    },
+}
+
+
+def get_season_suggestions():
+    """Return list of available seasons."""
+    return list(SEASON_PROFILES.keys())
+
 
 def detect_theme_heuristic(image: Image.Image) -> str:
     """
@@ -129,6 +162,67 @@ def get_theme_outfit(theme: str) -> dict:
     Get outfit recommendations for a given theme.
     """
     return THEME_PROFILES.get(theme, THEME_PROFILES["casual"])
+
+
+def get_season_outfit(season: str) -> dict:
+    """Get season-based garment emphasis."""
+    return SEASON_PROFILES.get(season, SEASON_PROFILES["summer"])
+
+
+def _pick_garments_for_theme_season(theme: str, season: str) -> tuple:
+    """Pick one top and one bottom from theme + season. Returns (top, bottom)."""
+    theme_outfit = get_theme_outfit(theme)
+    season_outfit = get_season_outfit(season)
+    theme_tops = [t.lower() for t in theme_outfit["tops"]]
+    theme_bottoms = [b.lower() for b in theme_outfit["bottoms"]]
+    # Prefer season items that appear in theme; else theme; else season
+    top = None
+    for t in season_outfit["top_emphasis"]:
+        if t.lower() in theme_tops:
+            top = t
+            break
+    if top is None:
+        top = theme_outfit["tops"][0] if theme_outfit["tops"] else season_outfit["top_emphasis"][0]
+    bottom = None
+    for b in season_outfit["bottom_emphasis"]:
+        if b.lower() in theme_bottoms:
+            bottom = b
+            break
+    if bottom is None:
+        bottom = theme_outfit["bottoms"][0] if theme_outfit["bottoms"] else season_outfit["bottom_emphasis"][0]
+    return top, bottom
+
+
+def get_outfit_prompt(
+    theme: str,
+    season: str,
+    recommended_colors: list,
+    theme_name: str = None,
+) -> str:
+    """
+    Build a stable-diffusion style prompt for outfit generation.
+    Uses theme + season for garment types and recommended_colors (from color analysis)
+    for color words so the generated clothes suit the person.
+    Returns a string like: "person wearing olive hoodie and blue jeans, college style, winter, ..."
+    """
+    top, bottom = _pick_garments_for_theme_season(theme, season)
+    season_profile = get_season_outfit(season)
+    theme_profile = get_theme_outfit(theme)
+    name = theme_name or theme_profile.get("name", theme)
+
+    # Use first 2 colors from analysis for top and bottom (e.g. olive, blue)
+    color1 = recommended_colors[0] if recommended_colors else "neutral"
+    color2 = recommended_colors[1] if len(recommended_colors) > 1 else recommended_colors[0] if recommended_colors else "neutral"
+    # Normalize color names for prompt (lowercase, no spaces for consistency)
+    c1 = color1.lower().replace(" ", "")
+    c2 = color2.lower().replace(" ", "")
+
+    prompt = (
+        f"person wearing {color1} {top} and {color2} {bottom}, "
+        f"{name} style, {season_profile['style_words']}, "
+        "professional photo, good lighting, high quality, full body"
+    )
+    return prompt
 
 
 def suggest_outfit_for_user(
