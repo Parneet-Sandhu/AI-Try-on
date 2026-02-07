@@ -75,19 +75,19 @@ def load_models(opt):
 
 def create_clothing_mask(image: Image.Image, cloth_image: Image.Image = None) -> Image.Image:
     """
-    Create a simple mask for the clothing region (torso + upper legs).
-    Used for inpainting: masked area will be replaced by generated clothing.
-    cloth_image is optional (kept for backward compatibility with generate_tryon).
+    Create a mask for the full clothing region (torso + legs) so inpainting
+    generates both top and bottom. Mask covers from upper chest down to lower legs.
     """
     width, height = image.size
     mask = Image.new('L', (width, height), 0)
-    left = int(width * 0.15)
-    top = int(height * 0.15)
-    right = int(width * 0.85)
-    bottom = int(height * 0.85)
+    # Full outfit: from ~10% (below neck) to ~92% (include legs) so bottom wear is in the mask
+    left = int(width * 0.12)
+    top_y = int(height * 0.10)
+    right = int(width * 0.88)
+    bottom_y = int(height * 0.92)
     from PIL import ImageDraw
     draw = ImageDraw.Draw(mask)
-    draw.rectangle([left, top, right, bottom], fill=255)
+    draw.rectangle([left, top_y, right, bottom_y], fill=255)
     return mask
 
 
