@@ -146,19 +146,31 @@ def recommend_colors(skin_tone_class: str, temperature: str) -> dict:
     })
 
 
+def get_contrast_level(skin_class: str) -> str:
+    """Soft vs high contrast (for styling). Fair/Deep = high, Medium = soft."""
+    return "high" if skin_class in ("Fair", "Deep") else "soft"
+
+
 def analyze_person(image: Image.Image) -> dict:
     """
-    Full color analysis: extract skin tone and recommend colors.
-    Returns dict with analysis results.
+    Stage 1: Color analysis. Extract skin tone, undertone, elite colors, forbidden colors.
+    Returns dict with everything the AI Stylist (Stage 2) needs.
     """
     skin_rgb = extract_skin_tone(image)
     skin_class = classify_skin_tone(skin_rgb)
     temperature = get_color_temperature(skin_rgb)
     recommendations = recommend_colors(skin_class, temperature)
 
+    elite = list(recommendations.get("best_colors", [])[:6])
+    forbidden = list(recommendations.get("avoid", []))
+
     return {
         "skin_tone_rgb": skin_rgb,
         "skin_tone_class": skin_class,
         "temperature": temperature,
+        "undertone": temperature.lower(),
+        "contrast": get_contrast_level(skin_class),
+        "elite_colors": elite,
+        "forbidden_colors": forbidden,
         "recommendations": recommendations,
     }

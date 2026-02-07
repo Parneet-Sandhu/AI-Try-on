@@ -91,6 +91,82 @@ def create_clothing_mask(image: Image.Image, cloth_image: Image.Image = None) ->
     return mask
 
 
+def build_prompt_from_plan(plan: dict, season: str) -> str:
+    """
+    Stage 3 prompt: color-locked, exact top/bottom from plan. No room for model to invent.
+    """
+    top_color = plan.get("top_color", "neutral")
+    bottom_color = plan.get("bottom_color", "neutral")
+    top_type = plan.get("top_type", "top")
+    bottom_type = plan.get("bottom_type", "pants")
+    return (
+        f"Realistic photo of the same person wearing a {top_color} {top_type} and {bottom_color} {bottom_type}, "
+        f"{season} outfit, soft lighting, natural colors, professional, full body, both garments clearly visible"
+    )
+
+
+def build_negative_prompt(forbidden_colors: list) -> str:
+    """Lock out bad colors and clown outfits."""
+    base = "low quality, blurry, distorted, ugly, bad anatomy, deformed face, extra limbs, neon, bright red, purple, clown, garish"
+    if forbidden_colors:
+        avoid = ", ".join(str(c).lower() for c in forbidden_colors[:5])
+        base = f"{base}, {avoid}"
+    return base
+
+
+def generate_tryon_from_plan(
+    person_img: Image.Image,
+    plan: dict,
+    forbidden_colors: list,
+    season: str,
+    pipeline,
+    opt=None,
+    num_steps: int = 18,
+    guidance_scale: float = 5.5,
+):
+    """
+    Stage 3: Controlled virtual try-on. Uses EXACT plan (top_color, bottom_color, top_type, bottom_type).
+    Low CFG (5.5) so the model obeys color/garment instructions; negative prompt blocks forbidden colors.
+    """
+    prompt = build_prompt_from_plan(plan, season)
+    negative_prompt = build_negative_prompt(forbidden_colors or [])
+
+    size = (512, 512)
+    person_img = person_img.resize(size, Image.Resampling.LANCZOS)
+    mask_img = create_clothing_mask(person_img)
+    mask_img = mask_img.resize(size, Image.Resampling.LANCZOS)
+
+    import torch
+    with torch.no_grad():
+        output = pipeline(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            image=person_img,
+            mask_image=mask_img,
+            num_inference_steps=num_steps,
+            guidance_scale=guidance_scale,
+            height=512,
+            width=512,
+        )
+    img = output.images[0]
+
+    arr = np.array(img.convert("L"))
+    if float(arr.mean()) < 20:
+        with torch.no_grad():
+            output = pipeline(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                image=person_img,
+                mask_image=mask_img,
+                num_inference_steps=22,
+                guidance_scale=6.0,
+                height=512,
+                width=512,
+            )
+        img = output.images[0]
+    return img
+
+
 def generate_tryon_from_prompt(
     person_img: Image.Image,
     prompt: str,
@@ -100,9 +176,7 @@ def generate_tryon_from_prompt(
     guidance_scale: float = 7.0,
 ):
     """
-    Generate virtual try-on using only a text prompt (no cloth image).
-    Uses inpainting on the clothing region so the outfit matches theme + season + color analysis.
-    Faster defaults: 15 steps, guidance 7.0.
+    Generate virtual try-on using a text prompt (legacy). Prefer generate_tryon_from_plan for controlled output.
     """
     size = (512, 512)
     person_img = person_img.resize(size, Image.Resampling.LANCZOS)
@@ -125,10 +199,8 @@ def generate_tryon_from_prompt(
         )
     img = output.images[0]
 
-    # If result is too dark, retry once with more steps
     arr = np.array(img.convert("L"))
     if float(arr.mean()) < 20:
-        import torch
         with torch.no_grad():
             output = pipeline(
                 prompt=prompt,
