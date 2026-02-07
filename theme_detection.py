@@ -201,26 +201,28 @@ def get_outfit_prompt(
 ) -> str:
     """
     Build a stable-diffusion style prompt for outfit generation.
-    Uses theme + season for garment types and recommended_colors (from color analysis)
-    for color words so the generated clothes suit the person.
-    Returns a string like: "person wearing olive hoodie and blue jeans, college style, winter, ..."
+    Uses only theme + season for garment types and recommended_colors from
+    color analysis for this person — no hardcoded colors; different people
+    get different palettes from their analysis.
     """
     top, bottom = _pick_garments_for_theme_season(theme, season)
     season_profile = get_season_outfit(season)
     theme_profile = get_theme_outfit(theme)
     name = theme_name or theme_profile.get("name", theme)
 
-    # Use first 2 colors from analysis for top and bottom (e.g. olive, blue)
-    color1 = recommended_colors[0] if recommended_colors else "neutral"
-    color2 = recommended_colors[1] if len(recommended_colors) > 1 else recommended_colors[0] if recommended_colors else "neutral"
-    # Normalize color names for prompt (lowercase, no spaces for consistency)
-    c1 = color1.lower().replace(" ", "")
-    c2 = color2.lower().replace(" ", "")
+    # Use only this person's color analysis: first two recommended colors for top and bottom
+    if not recommended_colors:
+        color_top = color_bottom = "neutral"
+    elif len(recommended_colors) == 1:
+        color_top = color_bottom = recommended_colors[0]
+    else:
+        color_top = recommended_colors[0]
+        color_bottom = recommended_colors[1]
 
     prompt = (
-        f"person wearing {color1} {top} and {color2} {bottom}, "
-        f"{name} style, {season_profile['style_words']}, "
-        "professional photo, good lighting, high quality, full body"
+        f"person wearing {color_top} {top} on top and {color_bottom} {bottom} on bottom, "
+        f"full body outfit, both garments visible, {name} style, {season_profile['style_words']}, "
+        "professional photo, good lighting, high quality"
     )
     return prompt
 
